@@ -26,3 +26,6 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 anyhow = "1.0.102"
 base64 = "0.22.1"
 parking_lot = "0.12.5"
+
+[profile.release]
+lto = "thin"
