@@ -3,135 +3,95 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: write
-  packages: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
   BINARY_NAME: http-proxy-lb
 
 jobs:
-  release-binaries:
-    name: Release Binary (${{ matrix.name }})
+  build:
+    name: Build ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: linux-x86_64
-            os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            archive_ext: tar.gz
-          - name: macos-aarch64
-            os: macos-14
-            target: aarch64-apple-darwin
-            archive_ext: tar.gz
-          - name: windows-x86_64
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-            archive_ext: zip
-
+          - os: ubuntu-latest
+            name: linux-x64
+            archive: tar.gz
+          - os: macos-latest
+            name: macos-arm64
+            archive: tar.gz
+          - os: windows-latest
+            name: windows-x64
+            archive: zip
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          fetch-depth: 0
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
 
       - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --locked
 
       - name: Package archive (Unix)
         if: runner.os != 'Windows'
-        shell: bash
         run: |
-          set -euo pipefail
-          pkg_dir="${BINARY_NAME}-${{ github.ref_name }}-${{ matrix.target }}"
-          mkdir -p "${pkg_dir}"
-          cp "target/${{ matrix.target }}/release/${BINARY_NAME}" "${pkg_dir}/"
-          cp README.md LICENSE "${pkg_dir}/"
-          tar -czf "${pkg_dir}.tar.gz" "${pkg_dir}"
+          mkdir -p dist
+          cp "target/release/${{ env.BINARY_NAME }}" "dist/${{ env.BINARY_NAME }}"
+          tar -czf "dist/${{ env.BINARY_NAME }}-${{ matrix.name }}.tar.gz" -C dist "${{ env.BINARY_NAME }}"
 
       - name: Package archive (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $pkgDir = "${env:BINARY_NAME}-${{ github.ref_name }}-${{ matrix.target }}"
-          New-Item -ItemType Directory -Path $pkgDir | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/${env:BINARY_NAME}.exe" "$pkgDir/"
-          Copy-Item "README.md","LICENSE" "$pkgDir/"
-          Compress-Archive -Path "$pkgDir/*" -DestinationPath "$pkgDir.zip"
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item "target/release/${{ env.BINARY_NAME }}.exe" "dist/${{ env.BINARY_NAME }}.exe"
+          Compress-Archive -Path "dist/${{ env.BINARY_NAME }}.exe" -DestinationPath "dist/${{ env.BINARY_NAME }}-${{ matrix.name }}.zip" -Force
 
       - name: Upload packaged artifact
         uses: actions/upload-artifact@v7
         with:
-          name: release-${{ matrix.target }}
-          path: |
-            http-proxy-lb-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
-            http-proxy-lb-${{ github.ref_name }}-${{ matrix.target }}.zip
-          if-no-files-found: ignore
+          name: ${{ env.BINARY_NAME }}-${{ matrix.name }}
+          path: dist/${{ env.BINARY_NAME }}-${{ matrix.name }}.${{ matrix.archive }}
+          if-no-files-found: error
 
-  github-release:
-    name: GitHub Release
+  publish:
+    name: Publish GitHub Release
+    needs: build
     runs-on: ubuntu-latest
-    needs: release-binaries
-
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     steps:
       - name: Download packaged artifacts
         uses: actions/download-artifact@v8
         with:
-          path: dist
-          pattern: release-*
-          merge-multiple: true
+          path: artifacts
 
-      - name: Publish GitHub Release
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          find . -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec sha256sum {} \; > "SHA256SUMS-${{ github.ref_name }}.txt"
+
+      - name: Upload release assets
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            dist/*.tar.gz
-            dist/*.zip
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+            artifacts/SHA256SUMS-${{ github.ref_name }}.txt
           generate_release_notes: true
-
-  docker-release:
-    name: Docker Release
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=ref,event=tag
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
