@@ -1,97 +1,66 @@
 name: Release
+# The gate refuses a tag that differs from the Cargo.toml version: bump Cargo.toml in a PR,
+# merge it, wait for "CI OK" on main, then push the matching v<version> tag.
 
 on:
   push:
-    tags:
-      - 'v*'
-  workflow_dispatch:
+    tags: ['v*']
+  workflow_dispatch: # dry run: builds everything, publishes nothing
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: release-${{ github.ref_name }}
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  CARGO_TERM_COLOR: always
-  BINARY_NAME: http-proxy-lb
-
 jobs:
-  build:
-    name: Build ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            name: linux-x64
-            archive: tar.gz
-          - os: macos-latest
-            name: macos-arm64
-            archive: tar.gz
-          - os: windows-latest
-            name: windows-x64
-            archive: zip
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
+  gate:
+    name: Gate
+    permissions:
+      contents: read
+      checks: read
+    uses: seiunx-dev/ci-templates/.github/workflows/release-gate.yml@v1
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+  binaries:
+    name: Binaries
+    needs: gate
+    uses: seiunx-dev/ci-templates/.github/workflows/rust-release.yml@v1
+    with:
+      version: ${{ needs.gate.outputs.version }}
+      tag: ${{ needs.gate.outputs.tag }}
+      # Same assets as v1.0.1: http-proxy-lb-<tag>-<target-triple>.tar.gz with a top-level
+      # http-proxy-lb-<tag>-<target-triple>/ folder (binary, README.md, LICENSE); the Windows
+      # zip has the same files at its root. linux-arm64 is new (native arm runner).
+      targets: >-
+        [{"label":"linux-x64","os":"ubuntu-latest","target":"x86_64-unknown-linux-gnu"},
+         {"label":"linux-arm64","os":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu"},
+         {"label":"macos-arm64","os":"macos-latest","target":"aarch64-apple-darwin"},
+         {"label":"windows-x64","os":"windows-latest","target":"x86_64-pc-windows-msvc","layout":"flat"}]
+      asset-name: "{name}-{tag}-{target}"
+      extra-files: |
+        README.md
+        LICENSE
 
-      - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build release binary
-        run: cargo build --release --locked
-
-      - name: Package archive (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          mkdir -p dist
-          cp "target/release/${{ env.BINARY_NAME }}" "dist/${{ env.BINARY_NAME }}"
-          tar -czf "dist/${{ env.BINARY_NAME }}-${{ matrix.name }}.tar.gz" -C dist "${{ env.BINARY_NAME }}"
-
-      - name: Package archive (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path dist
-          Copy-Item "target/release/${{ env.BINARY_NAME }}.exe" "dist/${{ env.BINARY_NAME }}.exe"
-          Compress-Archive -Path "dist/${{ env.BINARY_NAME }}.exe" -DestinationPath "dist/${{ env.BINARY_NAME }}-${{ matrix.name }}.zip" -Force
-
-      - name: Upload packaged artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ env.BINARY_NAME }}-${{ matrix.name }}
-          path: dist/${{ env.BINARY_NAME }}-${{ matrix.name }}.${{ matrix.archive }}
-          if-no-files-found: error
+  docker:
+    name: Docker
+    needs: gate
+    if: needs.gate.outputs.is-tag == 'true' # dry runs never push images
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: read
+    uses: seiunx-dev/ci-templates/.github/workflows/docker.yml@v1
+    with:
+      promote-on-tag: true
 
   publish:
-    name: Publish GitHub Release
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-    steps:
-      - name: Download packaged artifacts
-        uses: actions/download-artifact@v8
-        with:
-          path: artifacts
-
-      - name: Generate checksums
-        run: |
-          cd artifacts
-          find . -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec sha256sum {} \; > "SHA256SUMS-${{ github.ref_name }}.txt"
-
-      - name: Upload release assets
-        uses: softprops/action-gh-release@v3
-        with:
-          files: |
-            artifacts/**/*.tar.gz
-            artifacts/**/*.zip
-            artifacts/SHA256SUMS-${{ github.ref_name }}.txt
-          generate_release_notes: true
+    name: GitHub Release
+    needs: [gate, binaries, docker]
+    if: needs.gate.outputs.is-tag == 'true'
+    permissions:
+      contents: write
+    uses: seiunx-dev/ci-templates/.github/workflows/gh-release.yml@v1
+    with:
+      tag: ${{ needs.gate.outputs.tag }}
+      prerelease: ${{ needs.gate.outputs.prerelease }}
