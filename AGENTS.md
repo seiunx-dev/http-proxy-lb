@@ -20,12 +20,10 @@ This repository contains `http-proxy-lb`, a Rust (edition 2021, Tokio async runt
 
 - Build: `cargo build` (debug) or `cargo build --release`
 - Run tests: `cargo test`; a single test with `cargo test <test_name>` (e.g. `cargo test round_robin_cycles_through_online`)
-- Run lint checks: `cargo clippy -- -D warnings`
+- Run lint checks: `cargo clippy --all-targets -- -D warnings` (as CI)
 - Format code: `cargo fmt -- --check`
 - Run container smoke test: `./scripts/docker-smoke.sh`, especially when touching Docker or deployment code
 - Validate config file: `./target/debug/http-proxy-lb --config config.yaml --check`
-
-`tests/integration_smoke.rs` spawns the actual binary and serializes through a `TEST_MUTEX`, so the binary must be built (`cargo build`) before those tests will pass.
 
 ## Code structure
 
@@ -35,7 +33,6 @@ This repository contains `http-proxy-lb`, a Rust (edition 2021, Tokio async runt
 - `src/health.rs`: active health checking logic
 - `src/proxy.rs`: CONNECT and HTTP forwarding logic
 - `src/main.rs`: startup, accept loop, background tasks
-- `tests/integration_smoke.rs`: end-to-end integration tests for config validation, timeouts, metrics, and connection limits
 - `scripts/docker-smoke.sh`: local Docker smoke test helper
 
 All source is a single binary crate. Each client connection runs in its own Tokio task, and upstream connections are established fresh per request (no upstream connection pooling).
@@ -96,17 +93,41 @@ Examples from this repo's history:
 
 ## GitHub Actions workflows
 
-Use the standardized workflow layout in `.github/workflows`:
+CI reuses the shared templates in
+[`seiunx-dev/ci-templates`](https://github.com/seiunx-dev/ci-templates) at `@v1`.
+The files in `.github/workflows` are thin callers:
 
-- `ci.yml` runs on `main` pushes, pull requests targeting `main`, and manual dispatch.
-- Rust CI order: `cargo fmt --all -- --check`, `cargo check --locked --all-targets`, `cargo clippy --locked --all-targets -- -D warnings`, then `cargo test --locked`.
-- `release.yml` is the standard release build entrypoint. It runs on `v*` tags and manual dispatch, builds release artifacts, uploads them with `actions/upload-artifact`, and publishes GitHub Release assets on tag pushes.
-- `docker.yml` is the standard Docker entrypoint. It runs on `main` pushes, `v*` tags, PRs that touch Docker/build inputs, and manual dispatch. PRs build only; non-PR runs push GHCR images with lowercase image names and Docker metadata tags.
+- `ci.yml` (`CI`) runs on `main` pushes, pull requests targeting `main`, and manual
+  dispatch: `rust-ci` (`cargo fmt --check`, `cargo clippy --all-targets -D warnings`,
+  `cargo test`, all `--locked`), `docker` and `actionlint`.
+- `docker` (root `Dockerfile`, `linux/amd64` only, GitHub Actions cache) does not wait
+  for the tests. PRs build only; on `main` it runs in parallel with `rust-ci` and pushes
+  the immutable `ghcr.io/seiunx-dev/http-proxy-lb:sha-<full sha>` and `:sha-<7 chars>` as
+  soon as the build finishes. The `Docker tags` job (`docker-retag.yml`, after `CI OK`)
+  then moves `:main` to that digest without rebuilding, so `:main` only follows commits
+  whose `CI OK` passed. An arm64 image would compile Rust under QEMU; add it only with a
+  `$BUILDPLATFORM` cross-compile.
+- The aggregate job **`CI OK`** is the only required status check.
+- `release.yml` (`Release`): bump the version in `Cargo.toml` in a PR → merge and wait
+  for `CI OK` on `main` → push the tag `v<version>`. `release-gate` refuses a tag that
+  differs from `Cargo.toml` and waits for `CI OK` on the tagged commit; then the
+  binaries are built (tags only; assets `http-proxy-lb-v<version>-<target-triple>.tar.gz`
+  for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and `aarch64-apple-darwin`,
+  each with a top-level folder of the same name holding the binary, `README.md` and
+  `LICENSE`, plus `http-proxy-lb-v<version>-x86_64-pc-windows-msvc.zip` with those files at
+  the root), the `main` image `:sha-<sha>` is promoted (re-tagged, not rebuilt) to
+  `:<version>`, `:<major>.<minor>` and `:latest`, and the GitHub Release is published
+  with `SHA256SUMS-<tag>.txt`. Manual dispatch is a dry run: it builds the binaries and
+  publishes nothing.
 
 Workflow maintenance rules:
 
-- Keep workflow filenames and top-level names aligned: `CI`, `Release`, `Docker`, and optional package-specific names.
-- Use `actions/checkout@v6`, `actions/setup-go@v6`, `actions/upload-artifact@v7`, `actions/download-artifact@v8`, `softprops/action-gh-release@v3`, and current Docker actions (`setup-buildx@v4`, `login@v4`, `metadata@v6`, `build-push@v7`).
-- Keep `permissions` minimal: `contents: read` for CI/Docker build-only work, `contents: write` for release publishing, and `packages: write` only when pushing container images.
-- Use workflow `concurrency` keyed by workflow name and ref, with release jobs using `release-${{ github.ref_name }}` and `cancel-in-progress: false`.
-- Do not reintroduce legacy workflow names such as `rust-ci.yml`, `build.yml`, `release-build.yml`, `docker-build.yml`, or `docker-release.yml` unless a package-specific workflow already exists and is intentionally preserved.
+- Use the shared templates first. Add custom jobs or steps only when a template
+  genuinely cannot meet the project's needs, keep them in the thin caller files, and
+  add a comment explaining why.
+- Template bugs and missing features are fixed upstream in `seiunx-dev/ci-templates`
+  (new `v1.x.y` tag), not worked around here.
+- Keep top-level `permissions: contents: read`; grant `packages: write` / `contents: write`
+  only on the job that needs it.
+- Third-party actions in caller-side custom steps are pinned to a full commit SHA with a
+  `# vX.Y.Z` comment; Dependabot (`github-actions`) updates them and the template refs.
