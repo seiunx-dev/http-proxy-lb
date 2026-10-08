@@ -26,7 +26,7 @@ A high-availability HTTP relay proxy with upstream load balancing, health checki
 ## Installation
 
 ```bash
-git clone https://github.com/Team-Haruki/http-proxy-lb
+git clone https://github.com/seiunx-dev/http-proxy-lb
 cd http-proxy-lb
 cargo build --release
 # binary is at target/release/http-proxy-lb
@@ -50,9 +50,14 @@ Or use Docker Compose:
 
 ```bash
 cp config.example.yaml config.yaml
-# edit config.yaml
+# edit config.yaml (see the note below)
 docker compose up -d
 ```
+
+Inside a container, set `listen: "0.0.0.0:8080"` and `admin_listen: "0.0.0.0:9090"`
+in `config.yaml`. `config.example.yaml` binds the proxy to `127.0.0.1`, which the published
+port cannot reach, and leaves `admin_listen` disabled. The image and Compose healthchecks call
+`http://localhost:9090/health`, so without the admin server the container reports unhealthy.
 
 ## Quick start
 
@@ -73,11 +78,11 @@ Set `RUST_LOG=debug` for verbose logging.
 ## Validation
 
 ```bash
-# unit + integration tests
+# unit tests
 cargo test
 
-# lint
-cargo clippy -- -D warnings
+# lint (CI also lints test code)
+cargo clippy --all-targets -- -D warnings
 
 # formatting
 cargo fmt -- --check
@@ -86,13 +91,19 @@ cargo fmt -- --check
 ./scripts/docker-smoke.sh
 ```
 
-The integration test suite exercises:
+All tests are unit tests in `#[cfg(test)]` modules under `src/`; there is no separate
+integration test suite. They cover:
 
-* config validation failure paths
-* direct HTTP forwarding with real response-status propagation
-* request timeout handling (`504 Gateway Timeout`)
-* connection limiting (`503 Service Unavailable`)
-* admin metrics/status byte counters and request counters
+* config parsing, defaults and validation failure paths (`src/config.rs`)
+* upstream selection (weighted round-robin, best score, priority fallback) and hot-reload
+  state preservation (`src/upstream.rs`)
+* domain policy matching and absolute-URI rewriting (`src/proxy.rs`)
+* the active health check's captive `generate_204` probe (`src/health.rs`)
+* admin request and active-connection counters (`src/admin.rs`)
+
+Forwarding, request timeouts (`504`), connection limiting (`503`) and byte counters have no
+automated tests; `./scripts/docker-smoke.sh` only checks that the container starts and serves
+`/health` and `/status`.
 
 ## Configuration
 
@@ -114,7 +125,7 @@ access_log: false
 
 health_check:
   interval_secs: 30   # probe interval for offline upstreams
-  timeout_secs: 5     # TCP-connect timeout per probe
+  timeout_secs: 5     # per-step probe timeout (connect, request write, response read)
 
 # Resource limits (0 = unlimited)
 limits:
@@ -148,7 +159,7 @@ upstream:
 
 ### Hot reload
 
-Edit `config.yaml` while the proxy is running.  Within `reload_interval_secs` seconds the proxy will pick up the new upstream list.  Existing upstreams (matched by URL) keep their online/offline state and statistics.
+Edit `config.yaml` while the proxy is running.  Within `reload_interval_secs` seconds the proxy will pick up the new upstream list.  Existing upstreams (matched by URL) keep their online/offline state and statistics.  The file is only re-read when its modification time changes, and a new config that fails validation is ignored.  Other settings (listen addresses, `mode`, `health_check`, `domain_policy`, `limits`, `access_log`) are read once at startup and need a restart.
 
 ### Domain policy
 
@@ -255,6 +266,18 @@ sudo systemctl enable --now http-proxy-lb
 ```
 
 ### Docker Compose with Prometheus
+
+The `monitoring` profile starts Prometheus (UI on host port `9091`) and bind-mounts
+`./prometheus.yml`, which is not shipped in this repository. Create it next to
+`docker-compose.yml` first, otherwise Docker creates an empty directory at that path and
+Prometheus fails to start. A minimal scrape config (requires `admin_listen: "0.0.0.0:9090"`):
+
+```yaml
+scrape_configs:
+  - job_name: http-proxy-lb
+    static_configs:
+      - targets: ["http-proxy-lb:9090"]
+```
 
 ```bash
 docker compose --profile monitoring up -d

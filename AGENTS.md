@@ -21,7 +21,7 @@ This repository contains `http-proxy-lb`, a Rust (edition 2021, Tokio async runt
 - Build: `cargo build` (debug) or `cargo build --release`
 - Run tests: `cargo test`; a single test with `cargo test <test_name>` (e.g. `cargo test round_robin_cycles_through_online`)
 - Run lint checks: `cargo clippy --all-targets -- -D warnings` (as CI)
-- Format code: `cargo fmt -- --check`
+- Check formatting: `cargo fmt -- --check` (run `cargo fmt` to fix)
 - Run container smoke test: `./scripts/docker-smoke.sh`, especially when touching Docker or deployment code
 - Validate config file: `./target/debug/http-proxy-lb --config config.yaml --check`
 
@@ -52,7 +52,31 @@ Key data flow: `main` accept loop -> per-connection Tokio task -> `proxy::handle
 - Update tests and docs for any user-visible behavior change.
 - YAML config uses `yaml_serde` (imported under that name in `Cargo.toml`), not `serde_yaml`.
 - There is no external HTTP framework: the admin server and proxy protocol handling are hand-rolled over raw TCP with `httparse` for parsing. Keep it that way.
-- Prefer keeping `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt -- --check`, and `./scripts/docker-smoke.sh` green before considering work complete.
+- Prefer keeping `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt -- --check`, and `./scripts/docker-smoke.sh` green before considering work complete.
+- Keep `README.md` aligned with user-facing configuration and validation-workflow changes.
+
+## Tests
+
+- All tests are unit tests in `#[cfg(test)]` modules next to the code in `src/`; there is no `tests/` directory or integration suite.
+- Covered: config parsing/defaults/validation (`config.rs`), upstream selection and reload state (`upstream.rs`), domain policy matching and absolute-URI rewriting (`proxy.rs`), the captive `generate_204` probe (`health.rs`, using a local fake proxy), and admin counters (`admin.rs`).
+- Not covered by automated tests: request forwarding and status propagation, request timeout (`504`), connection limiting (`503`), and byte counters. `scripts/docker-smoke.sh` only builds the image, starts it with a temporary `0.0.0.0` config and curls `/health` and `/status`.
+
+## Domain policy expressions
+
+`domain_policy.domains` entries are matched by `domain_matches` in `src/proxy.rs`:
+
+- `domain:example.com` — exact match
+- `suffix:example.com` — the domain itself or any subdomain
+- `*.example.com` / `.example.com` — suffix shorthand
+- `example.com` — backward-compatible exact-or-suffix match
+
+Empty expressions (`domain:`, `suffix:`, `*.`) match nothing.
+
+## Deployment gotchas
+
+- `config.example.yaml` binds `listen` to `127.0.0.1:8080` and leaves `admin_listen` commented out. In a container both must bind `0.0.0.0`, and `admin_listen` must be set, because the `Dockerfile` `HEALTHCHECK` and the `docker-compose.yml` healthcheck curl `http://localhost:9090/health`.
+- The `monitoring` profile in `docker-compose.yml` bind-mounts `./prometheus.yml`, which is not in the repository; the user must create it.
+- Hot reload polls the config file's mtime every `reload_interval_secs` (0 disables it); a reload that fails validation keeps the current config. Only the upstream list is reloaded (`UpstreamPool::reload`); `listen`, `admin_listen`, `mode`, `health_check`, `domain_policy`, `limits`, `access_log` and `reload_interval_secs` are read once at startup and need a restart.
 
 ## Git commits
 
