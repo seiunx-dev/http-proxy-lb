@@ -267,17 +267,10 @@ sudo systemctl enable --now http-proxy-lb
 
 ### Docker Compose with Prometheus
 
-The `monitoring` profile starts Prometheus (UI on host port `9091`) and bind-mounts
-`./prometheus.yml`, which is not shipped in this repository. Create it next to
-`docker-compose.yml` first, otherwise Docker creates an empty directory at that path and
-Prometheus fails to start. A minimal scrape config (requires `admin_listen: "0.0.0.0:9090"`):
-
-```yaml
-scrape_configs:
-  - job_name: http-proxy-lb
-    static_configs:
-      - targets: ["http-proxy-lb:9090"]
-```
+The `monitoring` profile starts Prometheus (UI on host port `9091`) with the shipped
+[`prometheus.yml`](prometheus.yml), which scrapes `http-proxy-lb:9090/metrics` over the
+Compose network. Set `admin_listen: "0.0.0.0:9090"` in `config.yaml` (and `listen` to
+`0.0.0.0:8080`) so the admin server is reachable from the other container.
 
 ```bash
 docker compose --profile monitoring up -d

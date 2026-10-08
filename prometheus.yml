@@ -1,0 +1,11 @@
+# Minimal Prometheus config for the `monitoring` profile in docker-compose.yml.
+# Scrapes the admin server's /metrics endpoint over the Compose network, so
+# config.yaml must set `admin_listen: "0.0.0.0:9090"`.
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: http-proxy-lb
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["http-proxy-lb:9090"]

@@ -24,7 +24,8 @@ access_log: false
 health_check:
   # How often to probe offline upstreams (seconds)
   interval_secs: 30
-  # TCP-connect timeout when probing (seconds)
+  # Per-step probe timeout (seconds), applied separately to the TCP connect,
+  # the request write and the response read
   timeout_secs: 5
 
 # Resource limits (all optional, 0 = unlimited)

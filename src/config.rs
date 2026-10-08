@@ -110,7 +110,8 @@ pub struct HealthCheckConfig {
     /// Seconds between successive active-probe rounds
     #[serde(default = "default_hc_interval")]
     pub interval_secs: u64,
-    /// TCP-connect timeout for each probe (seconds)
+    /// Per-step probe timeout (seconds), applied separately to the TCP connect,
+    /// the request write and the response read
     #[serde(default = "default_hc_timeout")]
     pub timeout_secs: u64,
 }
