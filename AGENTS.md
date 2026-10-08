@@ -75,7 +75,7 @@ Empty expressions (`domain:`, `suffix:`, `*.`) match nothing.
 ## Deployment gotchas
 
 - `config.example.yaml` binds `listen` to `127.0.0.1:8080` and leaves `admin_listen` commented out. In a container both must bind `0.0.0.0`, and `admin_listen` must be set, because the `Dockerfile` `HEALTHCHECK` and the `docker-compose.yml` healthcheck curl `http://localhost:9090/health`.
-- The `monitoring` profile in `docker-compose.yml` bind-mounts `./prometheus.yml`, which is not in the repository; the user must create it.
+- The `monitoring` profile in `docker-compose.yml` bind-mounts the shipped `prometheus.yml`, which scrapes `http-proxy-lb:9090/metrics` over the Compose network; it only works when `admin_listen` is `0.0.0.0:9090`.
 - Hot reload polls the config file's mtime every `reload_interval_secs` (0 disables it); a reload that fails validation keeps the current config. Only the upstream list is reloaded (`UpstreamPool::reload`); `listen`, `admin_listen`, `mode`, `health_check`, `domain_policy`, `limits`, `access_log` and `reload_interval_secs` are read once at startup and need a restart.
 
 ## Git commits
@@ -131,7 +131,8 @@ The files in `.github/workflows` are thin callers:
   then moves `:main` to that digest without rebuilding, so `:main` only follows commits
   whose `CI OK` passed. An arm64 image would compile Rust under QEMU; add it only with a
   `$BUILDPLATFORM` cross-compile.
-- The aggregate job **`CI OK`** is the only required status check.
+- The aggregate job **`CI OK`** is the single status to require in branch protection;
+  `main` has no branch protection today, so nothing enforces it.
 - `release.yml` (`Release`): bump the version in `Cargo.toml` in a PR → merge and wait
   for `CI OK` on `main` → push the tag `v<version>`. `release-gate` refuses a tag that
   differs from `Cargo.toml` and waits for `CI OK` on the tagged commit; then the

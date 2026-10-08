@@ -1,6 +1,6 @@
 [Unit]
 Description=HTTP Proxy Load Balancer
-Documentation=https://github.com/Team-Haruki/http-proxy-lb
+Documentation=https://github.com/seiunx-dev/http-proxy-lb
 After=network-online.target
 Wants=network-online.target
 
